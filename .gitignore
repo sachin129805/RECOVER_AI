@@ -1,0 +1,13 @@
+backend/venv/
+backend/app/recoverai.db
+backend/storage/evidence/
+backend/storage/recovered/
+backend/storage/fragments/
+backend/__pycache__/
+backend/app/__pycache__/
+**/__pycache__/
+*.pyc
+.env
+.env.*
+node_modules/
+dist/

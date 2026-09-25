@@ -1,0 +1,13 @@
+{
+    "dataset": "RECOVERAI Controlled Fragmented PDF",
+    "source": "412sss.pdf",
+    "fragment_count": 4,
+    "missing_bytes": 73369,
+    "original_bytes": 733690,
+    "files": [
+        "fragment_001.bin",
+        "fragment_002.bin",
+        "fragment_003.bin",
+        "fragment_004.bin"
+    ]
+}

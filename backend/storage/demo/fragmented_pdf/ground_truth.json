@@ -1,0 +1,52 @@
+{
+    "dataset": "RECOVERAI Controlled Fragmented PDF",
+    "source_file": "412sss.pdf",
+    "source_sha256": "b32107011d2c52cce3935581a42b97536980aced98caf64b345421f7c45b2f5a",
+    "original_size_bytes": 733690,
+    "missing_region": {
+        "start": 330160,
+        "end": 403529,
+        "size_bytes": 73369
+    },
+    "fragments": [
+        {
+            "filename": "fragment_001.bin",
+            "size_bytes": 330160,
+            "sha256": "a94cb728fe86760dd9260ec74a33bbd3c6bf0a4b97b6bef663ccf460e09df056",
+            "ground_truth_offset": 0,
+            "ground_truth_end": 330160,
+            "source_file": "412sss.pdf"
+        },
+        {
+            "filename": "fragment_002.bin",
+            "size_bytes": 110053,
+            "sha256": "6e2e4f6620a4853e484b7fa52809e6fe509f9334b8474033fb9b7ecb34f2b424",
+            "ground_truth_offset": 403529,
+            "ground_truth_end": 513582,
+            "source_file": "412sss.pdf"
+        },
+        {
+            "filename": "fragment_003.bin",
+            "size_bytes": 110054,
+            "sha256": "a6744d46250c870ea7d91a5ff77eed2dc1f37c9b4d0380a4a11bf85504295298",
+            "ground_truth_offset": 513582,
+            "ground_truth_end": 623636,
+            "source_file": "412sss.pdf"
+        },
+        {
+            "filename": "fragment_004.bin",
+            "size_bytes": 110054,
+            "sha256": "12c7337c7041eda327d0d3387d90d84c90e6c4e5294aa0378dba5c20eb3417ed",
+            "ground_truth_offset": 623636,
+            "ground_truth_end": 733690,
+            "source_file": "412sss.pdf"
+        }
+    ],
+    "ground_truth_notes": [
+        "Fragments are deterministic slices of the original file.",
+        "The original source file is preserved.",
+        "The missing region is intentionally excluded from the recovery dataset.",
+        "Ground truth is used only for evaluating the prototype.",
+        "AI-inferred bytes must never be presented as verified original bytes."
+    ]
+}
