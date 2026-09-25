@@ -1,14 +1,29 @@
 import json
+import mimetypes
 import shutil
+
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    File,
+    HTTPException,
+    UploadFile,
+)
+
+from fastapi.responses import FileResponse
 
 from app.core.config import EVIDENCE_DIR
 from app.core.database import get_connection
-from app.services.hashing import calculate_sha256
-from app.services.metadata import extract_metadata
+
+from app.services.hashing import (
+    calculate_sha256,
+)
+
+from app.services.metadata import (
+    extract_metadata,
+)
 
 
 router = APIRouter(
@@ -22,7 +37,9 @@ router = APIRouter(
 # ============================================================
 
 @router.post("/upload")
-async def upload_evidence(file: UploadFile = File(...)):
+async def upload_evidence(
+    file: UploadFile = File(...)
+):
 
     if not file.filename:
         raise HTTPException(
@@ -30,22 +47,34 @@ async def upload_evidence(file: UploadFile = File(...)):
             detail="No filename provided.",
         )
 
-    evidence_id = f"EVD-{uuid4().hex[:8].upper()}"
+    evidence_id = (
+        f"EVD-{uuid4().hex[:8].upper()}"
+    )
 
-    safe_filename = Path(file.filename).name
+    safe_filename = Path(
+        file.filename
+    ).name
 
-    evidence_directory = EVIDENCE_DIR / evidence_id
+    evidence_directory = (
+        EVIDENCE_DIR /
+        evidence_id
+    )
 
     evidence_directory.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    destination = evidence_directory / safe_filename
+    destination = (
+        evidence_directory /
+        safe_filename
+    )
 
     try:
 
-        with destination.open("wb") as output:
+        with destination.open(
+            "wb"
+        ) as output:
 
             while True:
 
@@ -56,13 +85,18 @@ async def upload_evidence(file: UploadFile = File(...)):
                 if not chunk:
                     break
 
-                output.write(chunk)
+                output.write(
+                    chunk
+                )
 
     except Exception as error:
 
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to store evidence: {error}",
+            detail=(
+                "Failed to store evidence: "
+                f"{error}"
+            ),
         )
 
     # --------------------------------------------------------
@@ -111,7 +145,9 @@ async def upload_evidence(file: UploadFile = File(...)):
             metadata["extension"],
             str(destination),
             "stored",
-            json.dumps(metadata),
+            json.dumps(
+                metadata
+            ),
         ),
     )
 
@@ -119,27 +155,193 @@ async def upload_evidence(file: UploadFile = File(...)):
     connection.close()
 
     return {
-        "evidence_id": evidence_id,
-        "filename": metadata["filename"],
-        "size_bytes": metadata["size_bytes"],
-        "sha256": sha256,
-        "file_type": metadata["file_type"],
-        "extension": metadata["extension"],
-        "storage_path": str(destination),
-        "upload_status": "stored",
+        "evidence_id":
+            evidence_id,
+
+        "filename":
+            metadata["filename"],
+
+        "size_bytes":
+            metadata["size_bytes"],
+
+        "sha256":
+            sha256,
+
+        "file_type":
+            metadata["file_type"],
+
+        "extension":
+            metadata["extension"],
+
+        "storage_path":
+            str(destination),
+
+        "upload_status":
+            "stored",
+
         "metadata": {
-            "width": metadata.get("width"),
-            "height": metadata.get("height"),
-            "mode": metadata.get("mode"),
+            "width":
+                metadata.get(
+                    "width"
+                ),
+
+            "height":
+                metadata.get(
+                    "height"
+                ),
+
+            "mode":
+                metadata.get(
+                    "mode"
+                ),
         },
     }
+
+
+# ============================================================
+# INTERNAL EVIDENCE FILE LOOKUP
+# ============================================================
+
+def _get_evidence_file(
+    evidence_id: str,
+) -> tuple[dict, Path]:
+
+    connection = get_connection()
+
+    row = connection.execute(
+        """
+        SELECT
+            evidence_id,
+            filename,
+            storage_path,
+            file_type,
+            extension,
+            size_bytes,
+            sha256
+        FROM evidence
+        WHERE evidence_id = ?
+        """,
+        (
+            evidence_id,
+        ),
+    ).fetchone()
+
+    connection.close()
+
+    if not row:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Evidence not found.",
+        )
+
+    record = dict(row)
+
+    path = Path(
+        record["storage_path"]
+    )
+
+    if not path.is_file():
+
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "A previewable evidence "
+                "file is not available "
+                "for this record."
+            ),
+        )
+
+    try:
+
+        path.resolve().relative_to(
+            EVIDENCE_DIR.resolve()
+        )
+
+    except ValueError as exc:
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Evidence path is outside "
+                "the managed evidence store."
+            ),
+        ) from exc
+
+    return record, path
+
+
+# ============================================================
+# EVIDENCE PREVIEW
+# ============================================================
+
+@router.get(
+    "/{evidence_id}/preview"
+)
+def preview_evidence(
+    evidence_id: str,
+):
+
+    record, path = (
+        _get_evidence_file(
+            evidence_id
+        )
+    )
+
+    media_type = (
+        mimetypes.guess_type(
+            record["filename"]
+        )[0]
+        or "application/octet-stream"
+    )
+
+    return FileResponse(
+        path=str(path),
+        media_type=media_type,
+        filename=record["filename"],
+        content_disposition_type="inline",
+    )
+
+
+# ============================================================
+# EVIDENCE DOWNLOAD
+# ============================================================
+
+@router.get(
+    "/{evidence_id}/download"
+)
+def download_evidence(
+    evidence_id: str,
+):
+
+    record, path = (
+        _get_evidence_file(
+            evidence_id
+        )
+    )
+
+    media_type = (
+        mimetypes.guess_type(
+            record["filename"]
+        )[0]
+        or "application/octet-stream"
+    )
+
+    return FileResponse(
+        path=str(path),
+        media_type=media_type,
+        filename=record["filename"],
+        content_disposition_type="attachment",
+    )
 
 
 # ============================================================
 # IMPORT CONTROLLED DEMO FRAGMENTS
 # ============================================================
 
-@router.post("/import-demo-fragments")
+@router.post(
+    "/import-demo-fragments"
+)
 def import_demo_fragments():
 
     demo_directory = (
@@ -150,25 +352,29 @@ def import_demo_fragments():
     )
 
     ground_truth_path = (
-        demo_directory
-        / "ground_truth.json"
+        demo_directory /
+        "ground_truth.json"
     )
 
     if not demo_directory.exists():
+
         raise HTTPException(
             status_code=404,
-            detail="Demo fragment dataset not found.",
+            detail=(
+                "Demo fragment dataset "
+                "not found."
+            ),
         )
 
     if not ground_truth_path.exists():
+
         raise HTTPException(
             status_code=404,
-            detail="Demo ground truth file not found.",
+            detail=(
+                "Demo ground truth "
+                "file not found."
+            ),
         )
-
-    # --------------------------------------------------------
-    # Load ground truth
-    # --------------------------------------------------------
 
     try:
 
@@ -182,31 +388,37 @@ def import_demo_fragments():
 
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to read ground truth: {error}",
+            detail=(
+                "Failed to read "
+                f"ground truth: {error}"
+            ),
         )
 
-    fragment_definitions = ground_truth.get(
-        "fragments",
-        []
+    fragment_definitions = (
+        ground_truth.get(
+            "fragments",
+            []
+        )
     )
 
     if not fragment_definitions:
 
         raise HTTPException(
             status_code=400,
-            detail="No demo fragments defined.",
+            detail=(
+                "No demo fragments "
+                "defined."
+            ),
         )
 
-    # --------------------------------------------------------
-    # Create separate demo evidence ID
-    # --------------------------------------------------------
-
     evidence_id = (
-        f"EVD-DEMO-{uuid4().hex[:8].upper()}"
+        f"EVD-DEMO-"
+        f"{uuid4().hex[:8].upper()}"
     )
 
     evidence_directory = (
-        EVIDENCE_DIR / evidence_id
+        EVIDENCE_DIR /
+        evidence_id
     )
 
     evidence_directory.mkdir(
@@ -218,89 +430,127 @@ def import_demo_fragments():
 
     try:
 
-        for fragment in fragment_definitions:
+        for fragment in (
+            fragment_definitions
+        ):
 
-            filename = fragment["filename"]
+            filename = (
+                fragment["filename"]
+            )
 
-            source = demo_directory / filename
+            source = (
+                demo_directory /
+                filename
+            )
 
             if not source.exists():
 
                 raise FileNotFoundError(
-                    f"Missing demo fragment: {filename}"
+                    "Missing demo fragment: "
+                    f"{filename}"
                 )
 
             destination = (
-                evidence_directory / filename
+                evidence_directory /
+                filename
             )
 
             shutil.copy2(
                 source,
-                destination
+                destination,
             )
 
-            fragment_hash = calculate_sha256(
-                str(destination)
+            fragment_hash = (
+                calculate_sha256(
+                    str(destination)
+                )
             )
 
             imported_fragments.append(
                 {
-                    "filename": filename,
-                    "size_bytes": destination.stat().st_size,
-                    "sha256": fragment_hash,
-                    "ground_truth_offset": fragment.get(
-                        "ground_truth_offset"
-                    ),
-                    "ground_truth_end": fragment.get(
-                        "ground_truth_end"
-                    ),
-                    "storage_path": str(destination),
+                    "filename":
+                        filename,
+
+                    "size_bytes":
+                        destination.stat().st_size,
+
+                    "sha256":
+                        fragment_hash,
+
+                    "ground_truth_offset":
+                        fragment.get(
+                            "ground_truth_offset"
+                        ),
+
+                    "ground_truth_end":
+                        fragment.get(
+                            "ground_truth_end"
+                        ),
+
+                    "storage_path":
+                        str(destination),
                 }
             )
 
     except Exception as error:
 
-        # Clean up incomplete demo evidence.
         if evidence_directory.exists():
+
             shutil.rmtree(
                 evidence_directory,
-                ignore_errors=True
+                ignore_errors=True,
             )
 
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to import demo fragments: {error}",
+            detail=(
+                "Failed to import "
+                f"demo fragments: {error}"
+            ),
         )
 
-    # --------------------------------------------------------
-    # Store demo evidence record
-    # --------------------------------------------------------
-
-    original_size = ground_truth.get(
-        "original_size_bytes",
-        0
+    original_size = (
+        ground_truth.get(
+            "original_size_bytes",
+            0,
+        )
     )
 
-    original_sha256 = ground_truth.get(
-        "source_sha256",
-        ""
+    original_sha256 = (
+        ground_truth.get(
+            "source_sha256",
+            "",
+        )
     )
 
     metadata = {
-        "dataset": "RECOVERAI Controlled Fragmented PDF",
-        "source_file": ground_truth.get(
-            "source_file"
-        ),
-        "original_size_bytes": original_size,
-        "original_sha256": original_sha256,
-        "fragment_count": len(
-            imported_fragments
-        ),
-        "missing_region": ground_truth.get(
-            "missing_region"
-        ),
-        "fragments": imported_fragments,
-        "ground_truth": True,
+        "dataset":
+            "RECOVERAI Controlled Fragmented PDF",
+
+        "source_file":
+            ground_truth.get(
+                "source_file"
+            ),
+
+        "original_size_bytes":
+            original_size,
+
+        "original_sha256":
+            original_sha256,
+
+        "fragment_count":
+            len(imported_fragments),
+
+        "missing_region":
+            ground_truth.get(
+                "missing_region"
+            ),
+
+        "fragments":
+            imported_fragments,
+
+        "ground_truth":
+            True,
     }
 
     connection = get_connection()
@@ -322,17 +572,29 @@ def import_demo_fragments():
         """,
         (
             evidence_id,
+
             ground_truth.get(
                 "source_file",
-                "fragmented_evidence"
+                "fragmented_evidence",
             ),
+
             original_size,
+
             original_sha256,
+
             "PDF",
+
             ".pdf",
-            str(evidence_directory),
+
+            str(
+                evidence_directory
+            ),
+
             "demo-imported",
-            json.dumps(metadata),
+
+            json.dumps(
+                metadata
+            ),
         ),
     )
 
@@ -340,17 +602,30 @@ def import_demo_fragments():
     connection.close()
 
     return {
-        "evidence_id": evidence_id,
-        "status": "Demo fragments imported",
-        "dataset": metadata["dataset"],
-        "source_file": metadata["source_file"],
-        "original_size_bytes": original_size,
-        "fragment_count": len(
-            imported_fragments
-        ),
-        "missing_region": metadata[
-            "missing_region"
-        ],
-        "fragments": imported_fragments,
-        "ground_truth": True,
+        "evidence_id":
+            evidence_id,
+
+        "status":
+            "Demo fragments imported",
+
+        "dataset":
+            metadata["dataset"],
+
+        "source_file":
+            metadata["source_file"],
+
+        "original_size_bytes":
+            original_size,
+
+        "fragment_count":
+            len(imported_fragments),
+
+        "missing_region":
+            metadata["missing_region"],
+
+        "fragments":
+            imported_fragments,
+
+        "ground_truth":
+            True,
     }

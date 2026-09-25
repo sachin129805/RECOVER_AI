@@ -57,7 +57,7 @@ function AppShell() {
             <div className="system-top"><span className="status-dot" /> SYSTEM READY</div>
             <div className="system-meta">AI analysis engine online</div>
           </div>
-          <div className="sidebar-version">RECOVERAI v0.1 â€¢ DEMO MODE</div>
+          <div className="sidebar-version">RECOVERAI v0.1 • LIVE DATA</div>
         </div>
       </aside>
 
@@ -70,7 +70,7 @@ function AppShell() {
           <div className="top-actions">
             <button className="icon-btn" aria-label="Search"><Search size={18} /></button>
             <button className="icon-btn" aria-label="Notifications"><Bell size={18} /></button>
-            <div className="mode-pill"><span className="status-dot" /> DEMO DATA</div>
+            <div className="mode-pill"><span className="status-dot" /> LIVE DATA</div>
           </div>
         </header>
 

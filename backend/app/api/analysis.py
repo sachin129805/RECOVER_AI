@@ -1,34 +1,54 @@
 import json
 from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 
 from app.core.config import EVIDENCE_DIR
 from app.core.database import get_connection
-from app.recovery.scanner import scan_binary_file
 from app.recovery.integrity import validate_candidate
+from app.recovery.scanner import scan_binary_file
 from app.services.fragment_service import (
+    get_fragments,
     save_fragment,
     update_fragment_integrity,
-    get_fragments,
 )
 from app.services.relationship_service import (
     analyze_fragment_relationships,
     get_fragment_relationships,
 )
 
-router = APIRouter(prefix="/api/analysis", tags=["Analysis"])
 
+router = APIRouter(
+    prefix="/api/analysis",
+    tags=["Analysis"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Database helpers
+# ---------------------------------------------------------------------------
 
 def clear_previous_analysis(evidence_id: str):
+    """
+    Remove previous analysis results so rescanning the same evidence is
+    deterministic and does not create duplicate fragments or relationships.
+    """
+
     connection = get_connection()
 
     connection.execute(
-        "DELETE FROM fragment_relationships WHERE evidence_id = ?",
+        """
+        DELETE FROM fragment_relationships
+        WHERE evidence_id = ?
+        """,
         (evidence_id,),
     )
 
     connection.execute(
-        "DELETE FROM fragments WHERE evidence_id = ?",
+        """
+        DELETE FROM fragments
+        WHERE evidence_id = ?
+        """,
         (evidence_id,),
     )
 
@@ -41,9 +61,16 @@ def get_evidence_record(evidence_id: str):
 
     row = connection.execute(
         """
-        SELECT evidence_id, filename, size_bytes, sha256,
-               file_type, extension, storage_path,
-               metadata, upload_status
+        SELECT
+            evidence_id,
+            filename,
+            size_bytes,
+            sha256,
+            file_type,
+            extension,
+            storage_path,
+            metadata,
+            upload_status
         FROM evidence
         WHERE evidence_id = ?
         """,
@@ -55,144 +82,238 @@ def get_evidence_record(evidence_id: str):
     return dict(row) if row else None
 
 
-def calculate_entropy(file_path: Path) -> float:
-    from collections import Counter
-    import math
+# ---------------------------------------------------------------------------
+# Metadata helpers
+# ---------------------------------------------------------------------------
 
-    data = file_path.read_bytes()
+def parse_metadata(evidence_record: dict) -> dict:
+    """
+    Safely decode stored evidence metadata.
 
-    if not data:
-        return 0.0
+    Metadata is informational. It is never used to fabricate detections.
+    """
 
-    counts = Counter(data)
-    total = len(data)
+    raw_metadata = evidence_record.get("metadata")
 
-    return round(
-        -sum(
-            (count / total) * math.log2(count / total)
-            for count in counts.values()
-        ),
-        4,
-    )
+    if not raw_metadata:
+        return {}
+
+    if isinstance(raw_metadata, dict):
+        return raw_metadata
+
+    try:
+        parsed = json.loads(raw_metadata)
+
+        if isinstance(parsed, dict):
+            return parsed
+
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+
+    return {}
 
 
-def analyze_controlled_demo(
+def determine_scan_mode(
+    evidence_record: dict,
+    metadata: dict,
+) -> str:
+    """
+    Determine how the evidence should be scanned.
+
+    The mode is derived from stored evidence metadata rather than from
+    filenames or hardcoded fragment names.
+
+    Supported modes:
+
+        FILE
+            Normal complete evidence file.
+
+        RAW_IMAGE
+            Raw storage image / disk image where embedded signatures
+            should be searched.
+
+        FRAGMENT_SET
+            Evidence consists of supplied fragments. Individual fragments
+            are analyzed as candidates rather than being treated as
+            complete files.
+    """
+
+    explicit_mode = metadata.get("scan_mode")
+
+    if explicit_mode:
+        normalized = str(explicit_mode).strip().upper()
+
+        if normalized in {
+            "FILE",
+            "RAW_IMAGE",
+            "FRAGMENT_SET",
+        }:
+            return normalized
+
+    upload_status = str(
+        evidence_record.get("upload_status") or ""
+    ).lower()
+
+    if "fragment" in upload_status:
+        return "FRAGMENT_SET"
+
+    return "FILE"
+
+
+# ---------------------------------------------------------------------------
+# Fragment-set analysis
+# ---------------------------------------------------------------------------
+
+def analyze_fragment_set(
     evidence_id: str,
     evidence_record: dict,
     evidence_directory: Path,
+    metadata: dict,
 ):
     """
-    Controlled RECOVERAI benchmark mode.
+    Analyze supplied fragments without assuming their original file type.
 
-    The imported .bin files are already known forensic fragments.
-    They must NOT be rescanned for embedded file signatures because
-    random byte sequences can produce false JPEG/EXE/etc detections.
+    Important:
 
-    Ground-truth offsets are used as the simulated storage offsets
-    for this controlled benchmark dataset.
+    A partial fragment must not automatically be called a complete
+    recovered file merely because its first bytes happen to contain a
+    recognizable signature.
     """
 
-    try:
-        metadata = json.loads(evidence_record.get("metadata") or "{}")
-    except Exception:
-        metadata = {}
+    fragment_definitions = metadata.get("fragments")
 
-    if not metadata.get("ground_truth"):
-        return None
+    if not isinstance(fragment_definitions, list):
+        fragment_definitions = []
 
-    ground_truth_fragments = metadata.get("fragments", [])
+    files = [
+        path
+        for path in evidence_directory.iterdir()
+        if path.is_file()
+    ]
 
-    if not ground_truth_fragments:
+    if not files:
         raise HTTPException(
             status_code=400,
-            detail="Controlled demo evidence has no fragment metadata.",
+            detail="No evidence files found.",
         )
+
+    # Index optional acquisition metadata by filename.
+    metadata_by_filename = {}
+
+    for item in fragment_definitions:
+        if not isinstance(item, dict):
+            continue
+
+        filename = item.get("filename")
+
+        if filename:
+            metadata_by_filename[str(filename)] = item
 
     clear_previous_analysis(evidence_id)
 
     results = []
 
-    for fragment_definition in ground_truth_fragments:
-        filename = fragment_definition["filename"]
-        fragment_path = evidence_directory / filename
-
-        if not fragment_path.exists():
-            raise HTTPException(
-                status_code=404,
-                detail=f"Demo fragment not found: {filename}",
-            )
-
-        fragment_size = fragment_path.stat().st_size
-        entropy = calculate_entropy(fragment_path)
-
-        offset = fragment_definition.get("ground_truth_offset", 0)
-        end_offset = fragment_definition.get(
-            "ground_truth_end",
-            offset + fragment_size,
+    for file_path in files:
+        file_metadata = metadata_by_filename.get(
+            file_path.name,
+            {},
         )
 
-        # First fragment contains the PDF header.
-        is_header_fragment = filename == "fragment_001.bin"
+        fragment_size = file_path.stat().st_size
 
+        # A fragment is not automatically a complete file.
+        # We therefore do not run complete-file structural validation
+        # against it.
         detection = {
-            "file_type": "PDF Fragment",
-            "mime_type": "application/pdf",
-            "signature": "255044462d" if is_header_fragment else None,
-            "offset": offset,
+            "file_type": "Unknown Fragment",
+            "mime_type": None,
+            "signature": None,
+            "offset": file_metadata.get(
+                "ground_truth_offset",
+                file_metadata.get("offset", 0),
+            ),
             "sample_size": fragment_size,
-            "entropy": entropy,
-            "classification_confidence": 0.98 if is_header_fragment else 0.90,
-
-            # Controlled benchmark metadata
-            "fragment_start": offset,
-            "fragment_end": end_offset,
+            "entropy": None,
+            "classification_confidence": None,
+            "fragment_start": file_metadata.get(
+                "ground_truth_offset",
+                file_metadata.get("offset"),
+            ),
+            "fragment_end": file_metadata.get(
+                "ground_truth_end",
+                file_metadata.get("end_offset"),
+            ),
             "fragment_size": fragment_size,
-            "is_header_fragment": is_header_fragment,
-            "ground_truth_fragment": True,
+            "ground_truth_fragment": bool(
+                metadata.get("ground_truth")
+            ),
         }
+
+        # Entropy is calculated by the scanner's own implementation when
+        # possible. Importing it here avoids duplicating entropy logic.
+        from app.recovery.scanner import calculate_entropy
+
+        detection["entropy"] = calculate_entropy(file_path)
 
         fragment_id = save_fragment(
             evidence_id=evidence_id,
-            filename=filename,
+            filename=file_path.name,
             detection=detection,
         )
 
-        # Individual fragments are NOT complete PDF files.
-        # Therefore we deliberately do not call the PDF validator here.
         validation = {
             "integrity_status": "Partial Fragment",
             "recovery_status": "Candidate Fragment",
             "structural_integrity": None,
-            "verified_bytes": fragment_size,
+            "verified_bytes": 0,
             "inferred_bytes": 0,
             "validation_message": (
-                "Controlled fragmented-PDF evidence. "
-                "Individual fragment is not treated as a complete PDF. "
-                f"Simulated storage range: {offset}–{end_offset}."
+                "Evidence is being analyzed as a fragment set. "
+                "This fragment is not treated as a complete file. "
+                "No complete-file recovery has been verified."
             ),
         }
 
-        update_fragment_integrity(fragment_id, validation)
+        update_fragment_integrity(
+            fragment_id,
+            validation,
+        )
 
-        results.append({
-            **detection,
-            "filename": filename,
-            "fragment_id": fragment_id,
-            "integrity_status": validation["integrity_status"],
-            "recovery_status": validation["recovery_status"],
-            "structural_integrity": validation["structural_integrity"],
-            "verified_bytes": validation["verified_bytes"],
-            "inferred_bytes": validation["inferred_bytes"],
-            "validation_message": validation["validation_message"],
-        })
+        results.append(
+            {
+                **detection,
+                "filename": file_path.name,
+                "fragment_id": fragment_id,
+                "integrity_status": validation[
+                    "integrity_status"
+                ],
+                "recovery_status": validation[
+                    "recovery_status"
+                ],
+                "structural_integrity": validation[
+                    "structural_integrity"
+                ],
+                "verified_bytes": validation[
+                    "verified_bytes"
+                ],
+                "inferred_bytes": validation[
+                    "inferred_bytes"
+                ],
+                "validation_message": validation[
+                    "validation_message"
+                ],
+            }
+        )
 
     return {
         "evidence_id": evidence_id,
-        "status": "Controlled fragment analysis completed",
-        "analysis_mode": "CONTROLLED_BENCHMARK",
-        "files_scanned": len(ground_truth_fragments),
+        "status": "Fragment-set analysis completed",
+        "analysis_mode": "FRAGMENT_SET",
+        "files_scanned": len(files),
         "fragment_count": len(results),
-        "ground_truth": True,
+        "ground_truth": bool(
+            metadata.get("ground_truth")
+        ),
         "results": [
             {
                 "filename": item["filename"],
@@ -203,69 +324,53 @@ def analyze_controlled_demo(
     }
 
 
-@router.get("/scan/{evidence_id}")
-def run_analysis(evidence_id: str):
+# ---------------------------------------------------------------------------
+# Standard evidence analysis
+# ---------------------------------------------------------------------------
 
-    evidence_directory = EVIDENCE_DIR / evidence_id
+def analyze_standard_evidence(
+    evidence_id: str,
+    evidence_directory: Path,
+    scan_mode: str,
+):
+    """
+    Analyze normal evidence files.
 
-    if not evidence_directory.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="Evidence not found",
-        )
+    FILE mode:
+        Analyze each supplied file as a complete candidate.
 
-    evidence_record = get_evidence_record(evidence_id)
-
-    if not evidence_record:
-        raise HTTPException(
-            status_code=404,
-            detail="Evidence database record not found",
-        )
-
-    # ---------------------------------------------------------
-    # CONTROLLED DEMO DATASET
-    # ---------------------------------------------------------
-
-    demo_result = analyze_controlled_demo(
-        evidence_id=evidence_id,
-        evidence_record=evidence_record,
-        evidence_directory=evidence_directory,
-    )
-
-    if demo_result is not None:
-        return demo_result
-
-    # ---------------------------------------------------------
-    # NORMAL EVIDENCE ANALYSIS
-    # ---------------------------------------------------------
+    RAW_IMAGE mode:
+        Permit embedded signature scanning because raw storage evidence
+        can contain multiple recoverable objects.
+    """
 
     files = [
-        file
-        for file in evidence_directory.iterdir()
-        if file.is_file()
+        path
+        for path in evidence_directory.iterdir()
+        if path.is_file()
     ]
 
     if not files:
         raise HTTPException(
             status_code=400,
-            detail="No evidence files found",
+            detail="No evidence files found.",
         )
 
     clear_previous_analysis(evidence_id)
 
     all_results = []
 
-    for file_path in files:
+    allow_embedded_signatures = scan_mode == "RAW_IMAGE"
 
+    for file_path in files:
         detections = scan_binary_file(
             file_path,
-            allow_embedded_signatures=False,
+            allow_embedded_signatures=allow_embedded_signatures,
         )
 
         validated_detections = []
 
         for detection in detections:
-
             fragment_id = save_fragment(
                 evidence_id=evidence_id,
                 filename=file_path.name,
@@ -282,7 +387,6 @@ def run_analysis(evidence_id: str):
             )
 
             if not recovery_status:
-
                 integrity_status = validation.get(
                     "integrity_status",
                     "",
@@ -307,34 +411,37 @@ def run_analysis(evidence_id: str):
                 validation,
             )
 
-            validated_detections.append({
-                **detection,
+            validated_detections.append(
+                {
+                    **detection,
+                    "fragment_id": fragment_id,
+                    "integrity_status": validation.get(
+                        "integrity_status"
+                    ),
+                    "recovery_status": recovery_status,
+                    "structural_integrity": validation.get(
+                        "structural_integrity"
+                    ),
+                    "verified_bytes": validation.get(
+                        "verified_bytes",
+                        0,
+                    ),
+                    "inferred_bytes": validation.get(
+                        "inferred_bytes",
+                        0,
+                    ),
+                    "validation_message": validation.get(
+                        "validation_message"
+                    ),
+                }
+            )
 
-                "fragment_id": fragment_id,
-
-                "integrity_status":
-                    validation.get("integrity_status"),
-
-                "recovery_status":
-                    recovery_status,
-
-                "structural_integrity":
-                    validation.get("structural_integrity"),
-
-                "verified_bytes":
-                    validation.get("verified_bytes", 0),
-
-                "inferred_bytes":
-                    validation.get("inferred_bytes", 0),
-
-                "validation_message":
-                    validation.get("validation_message"),
-            })
-
-        all_results.append({
-            "filename": file_path.name,
-            "detections": validated_detections,
-        })
+        all_results.append(
+            {
+                "filename": file_path.name,
+                "detections": validated_detections,
+            }
+        )
 
     total_fragments = sum(
         len(result["detections"])
@@ -344,22 +451,73 @@ def run_analysis(evidence_id: str):
     return {
         "evidence_id": evidence_id,
         "status": "Analysis completed",
-        "analysis_mode": "STANDARD",
+        "analysis_mode": scan_mode,
         "files_scanned": len(files),
         "fragment_count": total_fragments,
         "results": all_results,
     }
 
 
-@router.get("/fragments/{evidence_id}")
-def list_fragments(evidence_id: str):
+# ---------------------------------------------------------------------------
+# Analysis endpoint
+# ---------------------------------------------------------------------------
 
+@router.get("/scan/{evidence_id}")
+def run_analysis(evidence_id: str):
     evidence_directory = EVIDENCE_DIR / evidence_id
 
     if not evidence_directory.exists():
         raise HTTPException(
             status_code=404,
-            detail="Evidence not found",
+            detail="Evidence not found.",
+        )
+
+    evidence_record = get_evidence_record(
+        evidence_id
+    )
+
+    if not evidence_record:
+        raise HTTPException(
+            status_code=404,
+            detail="Evidence database record not found.",
+        )
+
+    metadata = parse_metadata(
+        evidence_record
+    )
+
+    scan_mode = determine_scan_mode(
+        evidence_record,
+        metadata,
+    )
+
+    if scan_mode == "FRAGMENT_SET":
+        return analyze_fragment_set(
+            evidence_id=evidence_id,
+            evidence_record=evidence_record,
+            evidence_directory=evidence_directory,
+            metadata=metadata,
+        )
+
+    return analyze_standard_evidence(
+        evidence_id=evidence_id,
+        evidence_directory=evidence_directory,
+        scan_mode=scan_mode,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fragment endpoint
+# ---------------------------------------------------------------------------
+
+@router.get("/fragments/{evidence_id}")
+def list_fragments(evidence_id: str):
+    evidence_directory = EVIDENCE_DIR / evidence_id
+
+    if not evidence_directory.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Evidence not found.",
         )
 
     fragments = get_fragments(evidence_id)
@@ -371,29 +529,33 @@ def list_fragments(evidence_id: str):
     }
 
 
+# ---------------------------------------------------------------------------
+# Relationship analysis
+# ---------------------------------------------------------------------------
+
 @router.post("/relationships/{evidence_id}")
 def analyze_relationships(evidence_id: str):
-
     evidence_directory = EVIDENCE_DIR / evidence_id
 
     if not evidence_directory.exists():
         raise HTTPException(
             status_code=404,
-            detail="Evidence not found",
+            detail="Evidence not found.",
         )
 
-    return analyze_fragment_relationships(evidence_id)
+    return analyze_fragment_relationships(
+        evidence_id
+    )
 
 
 @router.get("/relationships/{evidence_id}")
 def list_relationships(evidence_id: str):
-
     evidence_directory = EVIDENCE_DIR / evidence_id
 
     if not evidence_directory.exists():
         raise HTTPException(
             status_code=404,
-            detail="Evidence not found",
+            detail="Evidence not found.",
         )
 
     relationships = get_fragment_relationships(

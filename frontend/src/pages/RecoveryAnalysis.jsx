@@ -4,80 +4,324 @@ import {
   Circle,
   LoaderCircle,
   AlertTriangle,
+  RefreshCw,
+  Network,
+  Play,
 } from "lucide-react";
 
 import Card from "../components/common/Card";
 import ProgressBar from "../components/common/ProgressBar";
 import Badge from "../components/common/Badge";
+import {
+  getInvestigation,
+  getInvestigationEvidence,
+  getInvestigationFragments,
+  getInvestigationRelationships,
+  scanEvidence,
+  analyzeInvestigationRelationships,
+} from "../api";
 
-const API_URL = "http://127.0.0.1:8000";
+function formatBytes(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "—";
+  }
+
+  const bytes = Number(value);
+
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  }
+
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(2)} KB`;
+  }
+
+  return `${bytes} B`;
+}
+
+function toneForIntegrity(status) {
+  if (status === "Structurally Valid") return "success";
+  if (
+    status === "Corrupted or Incomplete" ||
+    status === "Corrupted"
+  ) {
+    return "warning";
+  }
+  return "info";
+}
 
 export default function RecoveryAnalysis() {
-  const [evidence, setEvidence] = useState(null);
+  const [investigation, setInvestigation] = useState(null);
+  const [evidenceItems, setEvidenceItems] = useState([]);
+  const [activeEvidence, setActiveEvidence] = useState(null);
   const [analysis, setAnalysis] = useState(null);
+  const [fragments, setFragments] = useState([]);
+  const [relationships, setRelationships] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [relationshipRunning, setRelationshipRunning] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
 
-  useEffect(() => {
-    const storedEvidence = localStorage.getItem(
-      "recoverai_current_evidence"
-    );
+  const investigationId =
+    localStorage.getItem("recoverai_investigation_id") || null;
 
-    const storedAnalysis = localStorage.getItem(
-      "recoverai_analysis_result"
-    );
-
-    if (storedEvidence) {
-      setEvidence(JSON.parse(storedEvidence));
+  const storedActiveEvidence = useMemo(() => {
+    try {
+      const raw = localStorage.getItem("recoverai_current_evidence");
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
     }
-
-    if (storedAnalysis) {
-      setAnalysis(JSON.parse(storedAnalysis));
-    }
-
-    setLoading(false);
   }, []);
 
-  /*
-   * Flatten all detected fragments from the backend response.
-   */
-  const fragments = useMemo(() => {
-    if (!analysis?.results) return [];
+  const loadEvidenceWorkspace = async (evidenceId) => {
+    if (!evidenceId) {
+      setAnalysis(null);
+      setFragments([]);
+      setRelationships([]);
+      return;
+    }
 
-    return analysis.results.flatMap(
+    const [scanResult, fragmentResult, relationshipResult] =
+      await Promise.all([
+        scanEvidence(evidenceId),
+        investigationId
+          ? getInvestigationFragments(investigationId)
+          : Promise.resolve([]),
+        investigationId
+          ? getInvestigationRelationships(investigationId)
+          : Promise.resolve([]),
+      ]);
+
+    setAnalysis(scanResult);
+
+    const fragmentList = Array.isArray(fragmentResult)
+      ? fragmentResult
+      : fragmentResult?.fragments || [];
+
+    const relationshipList = Array.isArray(relationshipResult)
+      ? relationshipResult
+      : relationshipResult?.relationships || [];
+
+    setFragments(
+      fragmentList.filter(
+        (fragment) =>
+          !fragment.evidence_id ||
+          fragment.evidence_id === evidenceId
+      )
+    );
+
+    setRelationships(
+      relationshipList.filter(
+        (relationship) =>
+          !relationship.evidence_id ||
+          relationship.evidence_id === evidenceId
+      )
+    );
+
+    localStorage.setItem(
+      "recoverai_analysis_result",
+      JSON.stringify(scanResult)
+    );
+  };
+
+  const loadWorkspace = async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      let currentEvidence = storedActiveEvidence;
+
+      if (investigationId) {
+        const [investigationResult, evidenceResult] =
+          await Promise.all([
+            getInvestigation(investigationId),
+            getInvestigationEvidence(investigationId),
+          ]);
+
+        setInvestigation(investigationResult);
+
+        const items = Array.isArray(evidenceResult)
+          ? evidenceResult
+          : evidenceResult?.evidence || [];
+
+        setEvidenceItems(items);
+
+        const preferred =
+          items.find(
+            (item) =>
+              item.evidence_id ===
+              currentEvidence?.evidence_id
+          ) ||
+          items[0] ||
+          currentEvidence;
+
+        if (preferred) {
+          currentEvidence = preferred;
+          setActiveEvidence(preferred);
+          localStorage.setItem(
+            "recoverai_current_evidence",
+            JSON.stringify(preferred)
+          );
+        }
+      } else if (currentEvidence) {
+        setActiveEvidence(currentEvidence);
+        setEvidenceItems([currentEvidence]);
+      }
+
+      if (!currentEvidence?.evidence_id) {
+        setAnalysis(null);
+        setFragments([]);
+        setRelationships([]);
+        return;
+      }
+
+      await loadEvidenceWorkspace(currentEvidence.evidence_id);
+    } catch (err) {
+      console.error("Failed to load recovery analysis:", err);
+      setError(
+        err.message ||
+          "Unable to load live recovery analysis."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadWorkspace();
+  }, [investigationId]);
+
+  const selectEvidence = async (item) => {
+    if (!item?.evidence_id) return;
+
+    setActiveEvidence(item);
+    setError("");
+    setMessage("");
+
+    localStorage.setItem(
+      "recoverai_current_evidence",
+      JSON.stringify(item)
+    );
+    localStorage.removeItem("recoverai_reconstruction_result");
+
+    try {
+      setLoading(true);
+      await loadEvidenceWorkspace(item.evidence_id);
+      setMessage(`${item.filename} is now the active evidence artifact.`);
+    } catch (err) {
+      setError(err.message || "Unable to load selected evidence.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runAnalysis = async () => {
+    if (!activeEvidence?.evidence_id) {
+      setError("Select an evidence artifact before running analysis.");
+      return;
+    }
+
+    setRunning(true);
+    setError("");
+    setMessage("");
+
+    try {
+      await loadEvidenceWorkspace(activeEvidence.evidence_id);
+      setMessage("Evidence scan and fragment analysis completed.");
+    } catch (err) {
+      setError(err.message || "Unable to run evidence analysis.");
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const runRelationships = async () => {
+    if (!investigationId) {
+      setError("No active investigation is available for relationship analysis.");
+      return;
+    }
+
+    setRelationshipRunning(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const result = await analyzeInvestigationRelationships(
+        investigationId
+      );
+
+      const relationshipList = Array.isArray(result)
+        ? result
+        : result?.relationships || [];
+
+      setRelationships(relationshipList);
+
+      if (activeEvidence?.evidence_id) {
+        setRelationships(
+          relationshipList.filter(
+            (relationship) =>
+              !relationship.evidence_id ||
+              relationship.evidence_id === activeEvidence.evidence_id
+          )
+        );
+      }
+
+      setMessage(
+        result?.message ||
+          "Fragment relationship analysis completed."
+      );
+    } catch (err) {
+      setError(
+        err.message ||
+          "Unable to run fragment relationship analysis."
+      );
+    } finally {
+      setRelationshipRunning(false);
+    }
+  };
+
+  const scanResults = useMemo(
+    () => analysis?.results || [],
+    [analysis]
+  );
+
+  const detectedFragments = useMemo(() => {
+    if (fragments.length) return fragments;
+
+    return scanResults.flatMap(
       (result) => result.detections || []
     );
-  }, [analysis]);
+  }, [fragments, scanResults]);
 
-  /*
-   * Unique detected file types.
-   */
-  const detectedTypes = useMemo(() => {
-    return [
+  const detectedTypes = useMemo(
+    () => [
       ...new Set(
-        fragments
+        detectedFragments
           .map((fragment) => fragment.file_type)
           .filter(Boolean)
       ),
-    ];
-  }, [fragments]);
+    ],
+    [detectedFragments]
+  );
 
-  /*
-   * Calculate bytes scanned from actual backend results.
-   */
-  const bytesScanned = useMemo(() => {
-    if (!analysis?.results) return 0;
+  const bytesScanned = useMemo(
+    () =>
+      scanResults.reduce(
+        (total, result) =>
+          total + Number(result.size_bytes || 0),
+        0
+      ),
+    [scanResults]
+  );
 
-    return analysis.results.reduce(
-      (total, result) => total + (result.size_bytes || 0),
-      0
-    );
-  }, [analysis]);
-
-  /*
-   * Structural validation summary.
-   */
   const validationSummary = useMemo(() => {
-    if (!fragments.length) {
+    if (!detectedFragments.length) {
       return {
         completed: false,
         validCount: 0,
@@ -90,29 +334,29 @@ export default function RecoveryAnalysis() {
       };
     }
 
-    const pending = fragments.filter(
+    const pending = detectedFragments.filter(
       (fragment) =>
         fragment.structural_integrity === null ||
         fragment.structural_integrity === undefined
     );
 
-    const valid = fragments.filter(
+    const valid = detectedFragments.filter(
       (fragment) =>
         fragment.integrity_status === "Structurally Valid"
     );
 
-    const unsupported = fragments.filter(
+    const unsupported = detectedFragments.filter(
       (fragment) =>
         fragment.integrity_status === "Unsupported Validation"
     );
 
-    const invalid = fragments.filter(
+    const invalid = detectedFragments.filter(
       (fragment) =>
         fragment.integrity_status === "Corrupted or Incomplete" ||
         fragment.integrity_status === "Corrupted"
     );
 
-    const integrityValues = fragments
+    const integrityValues = detectedFragments
       .map((fragment) => fragment.structural_integrity)
       .filter(
         (value) =>
@@ -127,15 +371,15 @@ export default function RecoveryAnalysis() {
           ) / integrityValues.length
         : null;
 
-    const verifiedBytes = fragments.reduce(
+    const verifiedBytes = detectedFragments.reduce(
       (total, fragment) =>
-        total + (fragment.verified_bytes || 0),
+        total + Number(fragment.verified_bytes || 0),
       0
     );
 
-    const inferredBytes = fragments.reduce(
+    const inferredBytes = detectedFragments.reduce(
       (total, fragment) =>
-        total + (fragment.inferred_bytes || 0),
+        total + Number(fragment.inferred_bytes || 0),
       0
     );
 
@@ -149,22 +393,18 @@ export default function RecoveryAnalysis() {
       verifiedBytes,
       inferredBytes,
     };
-  }, [fragments]);
+  }, [detectedFragments]);
 
-  /*
-   * Human-readable aggregate integrity status.
-   */
   const integrityStatus = useMemo(() => {
-    if (!fragments.length) {
-      return "No Candidate";
-    }
+    if (!detectedFragments.length) return "No Candidate";
 
     if (validationSummary.pendingCount > 0) {
       return "Pending Structural Validation";
     }
 
     if (
-      validationSummary.validCount === fragments.length
+      validationSummary.validCount ===
+      detectedFragments.length
     ) {
       return "Structurally Valid";
     }
@@ -174,19 +414,17 @@ export default function RecoveryAnalysis() {
     }
 
     if (
-      validationSummary.unsupportedCount === fragments.length
+      validationSummary.unsupportedCount ===
+      detectedFragments.length
     ) {
       return "Unsupported Validation";
     }
 
     return "Validation Completed";
-  }, [fragments, validationSummary]);
+  }, [detectedFragments, validationSummary]);
 
-  /*
-   * Recovery status.
-   */
   const recoveryStatus = useMemo(() => {
-    if (!fragments.length) {
+    if (!detectedFragments.length) {
       return "No Recovery Candidates Detected";
     }
 
@@ -194,7 +432,10 @@ export default function RecoveryAnalysis() {
       return "Candidate Evidence Detected";
     }
 
-    if (validationSummary.validCount === fragments.length) {
+    if (
+      validationSummary.validCount ===
+      detectedFragments.length
+    ) {
       return "Structurally Valid Candidate";
     }
 
@@ -203,19 +444,8 @@ export default function RecoveryAnalysis() {
     }
 
     return "Candidate Evidence Detected";
-  }, [fragments, validationSummary]);
+  }, [detectedFragments, validationSummary]);
 
-  /*
-   * Validation message for the primary fragment.
-   */
-  const primaryValidationMessage =
-    fragments.length > 0
-      ? fragments[0].validation_message
-      : null;
-
-  /*
-   * Build the pipeline from real backend state.
-   */
   const pipeline = useMemo(() => {
     if (loading) {
       return [
@@ -228,19 +458,19 @@ export default function RecoveryAnalysis() {
       ];
     }
 
-    const hasEvidence = Boolean(evidence?.evidence_id);
+    const hasEvidence = Boolean(activeEvidence?.evidence_id);
     const hasScan = Boolean(analysis);
-    const hasFragments = fragments.length > 0;
-
+    const hasFragments = detectedFragments.length > 0;
     const validationCompleted =
       hasFragments &&
       validationSummary.pendingCount === 0;
+    const hasRelationships = relationships.length > 0;
 
     return [
       [
         "Evidence Scan",
-        hasEvidence ? "Completed" : "Pending",
-        hasEvidence ? 100 : 0,
+        hasEvidence && hasScan ? "Completed" : hasEvidence ? "Running" : "Pending",
+        hasEvidence && hasScan ? 100 : hasEvidence ? 60 : 0,
       ],
       [
         "File Signature Detection",
@@ -272,16 +502,17 @@ export default function RecoveryAnalysis() {
       ],
       [
         "Fragment Relationship Analysis",
-        "Pending",
-        0,
+        hasRelationships ? "Completed" : "Pending",
+        hasRelationships ? 100 : 0,
       ],
     ];
   }, [
     loading,
-    evidence,
+    activeEvidence,
     analysis,
-    fragments,
+    detectedFragments,
     validationSummary,
+    relationships,
   ]);
 
   const completedStages = pipeline.filter(
@@ -292,47 +523,34 @@ export default function RecoveryAnalysis() {
     (completedStages / pipeline.length) * 100
   );
 
-  const bytesLabel =
-    bytesScanned >= 1024 * 1024
-      ? `${(bytesScanned / (1024 * 1024)).toFixed(2)} MB`
-      : `${bytesScanned} bytes`;
-
-  const verifiedBytesLabel =
-    validationSummary.verifiedBytes >= 1024 * 1024
-      ? `${(
-          validationSummary.verifiedBytes /
-          (1024 * 1024)
-        ).toFixed(2)} MB`
-      : `${validationSummary.verifiedBytes} bytes`;
-
-  const inferredBytesLabel =
-    validationSummary.inferredBytes >= 1024 * 1024
-      ? `${(
-          validationSummary.inferredBytes /
-          (1024 * 1024)
-        ).toFixed(2)} MB`
-      : `${validationSummary.inferredBytes} bytes`;
+  const bytesLabel = formatBytes(bytesScanned);
+  const verifiedBytesLabel = formatBytes(
+    validationSummary.verifiedBytes
+  );
+  const inferredBytesLabel = formatBytes(
+    validationSummary.inferredBytes
+  );
 
   const integrityPercentage =
     validationSummary.averageIntegrity !== null
       ? `${validationSummary.averageIntegrity.toFixed(1)}%`
       : "—";
 
+  const primaryValidationMessage =
+    detectedFragments.length > 0
+      ? detectedFragments[0].validation_message
+      : null;
+
   if (loading) {
     return (
       <div className="page-intro">
         <div>
-          <span className="eyebrow">
-            AI RECOVERY PIPELINE
-          </span>
-
+          <span className="eyebrow">AI RECOVERY PIPELINE</span>
           <h2>Recovery Analysis</h2>
-
           <p className="muted">
-            Loading forensic analysis results...
+            Loading live forensic analysis results...
           </p>
         </div>
-
         <Badge tone="info">LOADING</Badge>
       </div>
     );
@@ -340,33 +558,216 @@ export default function RecoveryAnalysis() {
 
   return (
     <div>
-      {/* Header */}
       <div className="page-intro">
         <div>
-          <span className="eyebrow">
-            AI RECOVERY PIPELINE
-          </span>
-
+          <span className="eyebrow">AI RECOVERY PIPELINE</span>
           <h2>Recovery Analysis</h2>
-
           <p className="muted">
-            Live analysis results from the RECOVERAI
-            forensic backend.
+            Live evidence scan, fragment classification,
+            structural validation and relationship analysis.
           </p>
         </div>
 
-        <Badge tone="info">
-          {activePercent}% ACTIVE
-        </Badge>
+        <Badge tone="info">{activePercent}% ACTIVE</Badge>
+      </div>
+
+      {error && (
+        <Card>
+          <div className="contradiction">
+            <AlertTriangle size={18} />
+            <div>
+              <b>Analysis Error</b>
+              <p style={{ whiteSpace: "pre-line" }}>{error}</p>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {message && (
+        <Card>
+          <div className="contradiction">
+            <CheckCircle2 size={18} />
+            <div>
+              <b>Analysis Update</b>
+              <p>{message}</p>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {evidenceItems.length > 0 && (
+        <Card>
+          <div className="card-title">
+            <span>Investigation Evidence</span>
+            <Badge tone="info">
+              {evidenceItems.length} ITEM
+              {evidenceItems.length === 1 ? "" : "S"}
+            </Badge>
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              gap: "8px",
+              flexWrap: "wrap",
+            }}
+          >
+            {evidenceItems.map((item) => {
+              const active =
+                item.evidence_id ===
+                activeEvidence?.evidence_id;
+
+              return (
+                <button
+                  key={item.evidence_id}
+                  type="button"
+                  onClick={() => selectEvidence(item)}
+                  style={{
+                    border: active
+                      ? "1px solid #0284c7"
+                      : "1px solid #dbe3ec",
+                    background: active
+                      ? "#eff6ff"
+                      : "#ffffff",
+                    color: "#0f172a",
+                    borderRadius: "8px",
+                    padding: "9px 12px",
+                    cursor: "pointer",
+                    textAlign: "left",
+                  }}
+                >
+                  <strong
+                    style={{
+                      display: "block",
+                      fontSize: "12px",
+                    }}
+                  >
+                    {item.filename}
+                  </strong>
+                  <span
+                    style={{
+                      display: "block",
+                      marginTop: "3px",
+                      color: "#64748b",
+                      fontSize: "10px",
+                    }}
+                  >
+                    {item.evidence_id} ·{" "}
+                    {formatBytes(item.size_bytes)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: "8px",
+          marginBottom: "14px",
+          flexWrap: "wrap",
+        }}
+      >
+        <button
+          type="button"
+          onClick={loadWorkspace}
+          disabled={running || relationshipRunning}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "7px",
+            border: "1px solid #d7e0ea",
+            borderRadius: "8px",
+            background: "#fff",
+            color: "#334155",
+            padding: "9px 13px",
+            cursor: "pointer",
+          }}
+        >
+          <RefreshCw size={14} />
+          Refresh Analysis
+        </button>
+
+        <button
+          type="button"
+          onClick={runAnalysis}
+          disabled={
+            running || !activeEvidence?.evidence_id
+          }
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "7px",
+            border: "1px solid #0284c7",
+            borderRadius: "8px",
+            background: "#0284c7",
+            color: "#fff",
+            padding: "9px 13px",
+            cursor: "pointer",
+            opacity:
+              running || !activeEvidence?.evidence_id
+                ? 0.55
+                : 1,
+          }}
+        >
+          {running ? (
+            <LoaderCircle
+              size={14}
+              className="spin"
+            />
+          ) : (
+            <Play size={14} />
+          )}
+          {running ? "Running Analysis" : "Run Analysis"}
+        </button>
+
+        <button
+          type="button"
+          onClick={runRelationships}
+          disabled={
+            relationshipRunning ||
+            !investigationId ||
+            detectedFragments.length < 2
+          }
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "7px",
+            border: "1px solid #0ea5e9",
+            borderRadius: "8px",
+            background: "#fff",
+            color: "#0369a1",
+            padding: "9px 13px",
+            cursor: "pointer",
+            opacity:
+              relationshipRunning ||
+              !investigationId ||
+              detectedFragments.length < 2
+                ? 0.55
+                : 1,
+          }}
+        >
+          {relationshipRunning ? (
+            <LoaderCircle
+              size={14}
+              className="spin"
+            />
+          ) : (
+            <Network size={14} />
+          )}
+          {relationshipRunning
+            ? "Analyzing Relationships"
+            : "Analyze Relationships"}
+        </button>
       </div>
 
       <div className="analysis-grid">
-
-        {/* Pipeline */}
         <Card>
           <div className="card-title">
             <span>Pipeline Execution</span>
-
             <span className="live-label">
               <i />
               LIVE
@@ -374,60 +775,60 @@ export default function RecoveryAnalysis() {
           </div>
 
           <div className="pipeline">
-            {pipeline.map(([name, status, progress]) => (
-              <div
-                className="pipeline-row"
-                key={name}
-              >
+            {pipeline.map(
+              ([name, status, progress]) => (
                 <div
-                  className={`pipeline-icon ${status.toLowerCase()}`}
+                  className="pipeline-row"
+                  key={name}
                 >
-                  {status === "Completed" ? (
-                    <CheckCircle2 size={15} />
-                  ) : status === "Running" ? (
-                    <LoaderCircle
-                      className="spin"
-                      size={15}
-                    />
-                  ) : (
-                    <Circle size={15} />
-                  )}
-                </div>
-
-                <div className="pipeline-main">
-                  <div>
-                    <b>{name}</b>
-                    <span>{status}</span>
+                  <div
+                    className={`pipeline-icon ${status.toLowerCase()}`}
+                  >
+                    {status === "Completed" ? (
+                      <CheckCircle2 size={15} />
+                    ) : status === "Running" ? (
+                      <LoaderCircle
+                        className="spin"
+                        size={15}
+                      />
+                    ) : (
+                      <Circle size={15} />
+                    )}
                   </div>
 
-                  <ProgressBar value={progress} />
+                  <div className="pipeline-main">
+                    <div>
+                      <b>{name}</b>
+                      <span>{status}</span>
+                    </div>
+                    <ProgressBar value={progress} />
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            )}
           </div>
         </Card>
 
-        {/* Recovery / Integrity */}
         <div className="side-stack">
-
-          {/* Recovery Feasibility */}
           <Card>
             <div className="card-title">
               Recovery Feasibility
             </div>
 
             <div className="feasibility-score">
-              {fragments.length > 0 ? "—" : "0"}
+              {detectedFragments.length > 0
+                ? "—"
+                : "0"}
             </div>
 
             <p className="muted">
-              {evidence?.filename ||
+              {activeEvidence?.filename ||
                 "No evidence selected"}
             </p>
 
             <div className="metric-line">
               <span>Fragments detected</span>
-              <b>{fragments.length}</b>
+              <b>{detectedFragments.length}</b>
             </div>
 
             <div className="metric-line">
@@ -438,7 +839,7 @@ export default function RecoveryAnalysis() {
             <div className="metric-line">
               <span>Metadata</span>
               <b>
-                {evidence?.metadata
+                {activeEvidence?.metadata
                   ? "Available"
                   : "Unavailable"}
               </b>
@@ -454,7 +855,7 @@ export default function RecoveryAnalysis() {
                 validationSummary.completed &&
                 validationSummary.validCount > 0
                   ? "success"
-                  : fragments.length > 0
+                  : detectedFragments.length > 0
                   ? "info"
                   : "warning"
               }
@@ -462,13 +863,12 @@ export default function RecoveryAnalysis() {
               {validationSummary.completed &&
               validationSummary.validCount > 0
                 ? "VALIDATED"
-                : fragments.length > 0
+                : detectedFragments.length > 0
                 ? "CANDIDATE DETECTED"
                 : "NO CANDIDATE"}
             </Badge>
           </Card>
 
-          {/* Integrity */}
           <Card>
             <div className="card-title">
               Integrity Assessment
@@ -505,7 +905,9 @@ export default function RecoveryAnalysis() {
                     {validationSummary.invalidCount >
                       0 && (
                       <div className="metric-line">
-                        <span>Corrupted / Incomplete</span>
+                        <span>
+                          Corrupted / Incomplete
+                        </span>
                         <b>
                           {validationSummary.invalidCount}
                         </b>
@@ -525,9 +927,7 @@ export default function RecoveryAnalysis() {
                     )}
 
                     {primaryValidationMessage && (
-                      <p>
-                        {primaryValidationMessage}
-                      </p>
+                      <p>{primaryValidationMessage}</p>
                     )}
                   </>
                 ) : (
@@ -542,22 +942,19 @@ export default function RecoveryAnalysis() {
 
             <small className="muted">
               {validationSummary.completed
-                ? "Structural validation completed using the recovered candidate bytes."
-                : "Structural validation is being evaluated by the recovery backend."}
+                ? "Structural validation completed using the recovery backend."
+                : "Structural validation is being evaluated from available candidate evidence."}
             </small>
           </Card>
-
         </div>
       </div>
 
-      {/* Real scan telemetry */}
       <Card>
         <div className="card-title">
           Scan Telemetry
         </div>
 
         <div className="telemetry">
-
           <div>
             <small>Bytes scanned</small>
             <b>{bytesLabel}</b>
@@ -565,57 +962,47 @@ export default function RecoveryAnalysis() {
 
           <div>
             <small>Fragments</small>
-            <b>{fragments.length}</b>
+            <b>{detectedFragments.length}</b>
           </div>
 
           <div>
             <small>Candidate files</small>
-            <b>
-              {analysis?.files_scanned || 0}
-            </b>
+            <b>{analysis?.files_scanned || 0}</b>
           </div>
 
           <div>
             <small>Evidence ID</small>
             <b className="mono">
-              {evidence?.evidence_id || "—"}
+              {activeEvidence?.evidence_id || "—"}
             </b>
           </div>
 
           <div>
             <small>Signatures</small>
-
             <b>
-              {detectedTypes.length > 0
+              {detectedTypes.length
                 ? detectedTypes.join(" · ")
                 : "None detected"}
             </b>
           </div>
-
         </div>
       </Card>
 
-      {/* Validation Summary */}
-      {fragments.length > 0 && (
+      {detectedFragments.length > 0 && (
         <Card>
           <div className="card-title">
             Validation Summary
           </div>
 
           <div className="telemetry">
-
             <div>
               <small>Validated</small>
-              <b>
-                {validationSummary.validCount}
-              </b>
+              <b>{validationSummary.validCount}</b>
             </div>
 
             <div>
               <small>Corrupted / Incomplete</small>
-              <b>
-                {validationSummary.invalidCount}
-              </b>
+              <b>{validationSummary.invalidCount}</b>
             </div>
 
             <div>
@@ -634,13 +1021,11 @@ export default function RecoveryAnalysis() {
               <small>Inferred Bytes</small>
               <b>{inferredBytesLabel}</b>
             </div>
-
           </div>
         </Card>
       )}
 
-      {/* Fragment details */}
-      {fragments.length > 0 && (
+      {detectedFragments.length > 0 && (
         <Card>
           <div className="card-title">
             Detected Fragments
@@ -661,27 +1046,26 @@ export default function RecoveryAnalysis() {
               </thead>
 
               <tbody>
-                {fragments.map((fragment) => (
+                {detectedFragments.map((fragment) => (
                   <tr key={fragment.fragment_id}>
-
                     <td className="mono">
-                      {fragment.fragment_id}
+                      {fragment.fragment_id || "—"}
                     </td>
 
                     <td>
-                      {fragment.file_type}
+                      {fragment.file_type || "Unknown"}
                     </td>
 
                     <td>
-                      {fragment.offset} bytes
+                      {formatBytes(fragment.offset)}
                     </td>
 
                     <td>
-                      {fragment.sample_size} bytes
+                      {formatBytes(fragment.sample_size)}
                     </td>
 
                     <td>
-                      {fragment.entropy}
+                      {fragment.entropy ?? "—"}
                     </td>
 
                     <td>
@@ -693,22 +1077,15 @@ export default function RecoveryAnalysis() {
 
                     <td>
                       <Badge
-                        tone={
-                          fragment.integrity_status ===
-                          "Structurally Valid"
-                            ? "success"
-                            : fragment.integrity_status ===
-                              "Corrupted or Incomplete"
-                            ? "warning"
-                            : "info"
-                        }
+                        tone={toneForIntegrity(
+                          fragment.integrity_status
+                        )}
                       >
                         {fragment.integrity_status ||
                           fragment.recovery_status ||
                           "Candidate"}
                       </Badge>
                     </td>
-
                   </tr>
                 ))}
               </tbody>
@@ -717,20 +1094,93 @@ export default function RecoveryAnalysis() {
         </Card>
       )}
 
-      {/* No evidence state */}
-      {!evidence && (
+      <Card>
+        <div className="card-title">
+          Fragment Relationship Analysis
+        </div>
+
+        {relationships.length === 0 ? (
+          <div className="contradiction">
+            <Network size={17} />
+            <div>
+              <b>No persisted relationships for this evidence</b>
+              <p>
+                Run relationship analysis when at least two
+                compatible fragment candidates are available.
+                A single intact file does not create a
+                fabricated relationship.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fragment A</th>
+                  <th>Fragment B</th>
+                  <th>Relationship</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {relationships.map((relationship) => (
+                  <tr
+                    key={
+                      relationship.relationship_id ||
+                      `${relationship.fragment_a_id}-${relationship.fragment_b_id}`
+                    }
+                  >
+                    <td className="mono">
+                      {relationship.fragment_a_id}
+                    </td>
+                    <td className="mono">
+                      {relationship.fragment_b_id}
+                    </td>
+                    <td>
+                      {relationship.relationship || "Candidate"}
+                    </td>
+                    <td>
+                      {typeof relationship.relationship_score ===
+                      "number"
+                        ? `${(
+                            relationship.relationship_score *
+                            100
+                          ).toFixed(1)}%`
+                        : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {!activeEvidence && (
         <Card>
           <div className="card-title">
             No Live Evidence Loaded
           </div>
-
           <p className="muted">
             Start a new investigation and upload evidence
-            to populate this analysis with real backend
-            results.
+            to populate this page with real backend results.
           </p>
         </Card>
       )}
+
+      <style>{`
+        .spin {
+          animation: recoverai-spin 0.9s linear infinite;
+        }
+
+        @keyframes recoverai-spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
     </div>
   );
 }
+

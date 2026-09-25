@@ -40,6 +40,14 @@ def analyze_fragment_relationships(evidence_id: str):
             "relationships": [],
         }
 
+    connection.execute(
+        """
+        DELETE FROM fragment_relationships
+        WHERE evidence_id = ?
+        """,
+        (evidence_id,),
+    )
+
     relationships = []
 
     for index, fragment_a in enumerate(fragments):
@@ -52,6 +60,7 @@ def analyze_fragment_relationships(evidence_id: str):
             )
 
             relationship_id = generate_relationship_id()
+            reasons_json = json.dumps(result.get("reasons", []))
 
             connection.execute(
                 """
@@ -62,7 +71,7 @@ def analyze_fragment_relationships(evidence_id: str):
                     fragment_b_id,
                     relationship_score,
                     relationship,
-                    reasons
+                    reasons_json
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -73,7 +82,7 @@ def analyze_fragment_relationships(evidence_id: str):
                     fragment_b["fragment_id"],
                     result["relationship_score"],
                     result["relationship"],
-                    json.dumps(result["reasons"]),
+                    reasons_json,
                 ),
             )
 
@@ -86,7 +95,7 @@ def analyze_fragment_relationships(evidence_id: str):
                         "relationship_score"
                     ],
                     "relationship": result["relationship"],
-                    "reasons": result["reasons"],
+                    "reasons": result.get("reasons", []),
                 }
             )
 
@@ -121,13 +130,17 @@ def get_fragment_relationships(evidence_id: str):
 
     for row in rows:
         item = dict(row)
+        raw_reasons = item.get("reasons_json")
 
         try:
             item["reasons"] = json.loads(
-                item.get("reasons") or "[]"
+                raw_reasons or "[]"
             )
-        except json.JSONDecodeError:
+        except (TypeError, ValueError, json.JSONDecodeError):
             item["reasons"] = []
+
+        if "reasons_json" in item:
+            item.pop("reasons_json", None)
 
         relationships.append(item)
 
