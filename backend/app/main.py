@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.image_recovery import router as image_recovery_router
 from app.api.analysis import router as analysis_router
 from app.api.benchmarks import router as benchmark_router
 from app.api.copilot import router as copilot_router
@@ -102,6 +103,14 @@ app.include_router(
 
 app.include_router(
     query_router
+)
+
+# ------------------------------------------------------------
+# AI IMAGE RECOVERY
+# ------------------------------------------------------------
+
+app.include_router(
+    image_recovery_router
 )
 
 

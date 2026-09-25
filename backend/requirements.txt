@@ -4,4 +4,6 @@ python-multipart
 pydantic
 Pillow
 PyMuPDF
-psycopg[binary]
+numpy
+opencv-python
+simple-lama-inpainting

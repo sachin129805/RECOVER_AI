@@ -22,7 +22,6 @@ export async function apiFetch(path, options = {}) {
 
     try {
       const parsed = JSON.parse(text);
-
       message =
         parsed.detail ||
         parsed.message ||
@@ -44,11 +43,7 @@ export async function apiFetch(path, options = {}) {
   const contentType =
     response.headers.get("content-type") || "";
 
-  if (
-    contentType.includes(
-      "application/json"
-    )
-  ) {
+  if (contentType.includes("application/json")) {
     return response.json();
   }
 
@@ -63,18 +58,12 @@ export async function apiFetch(path, options = {}) {
 export function uploadEvidence(file) {
   const formData = new FormData();
 
-  formData.append(
-    "file",
-    file
-  );
+  formData.append("file", file);
 
-  return apiFetch(
-    "/api/evidence/upload",
-    {
-      method: "POST",
-      body: formData,
-    }
-  );
+  return apiFetch("/api/evidence/upload", {
+    method: "POST",
+    body: formData,
+  });
 }
 
 
@@ -83,27 +72,18 @@ export function uploadEvidence(file) {
    ========================================================= */
 
 export function createInvestigation(data) {
-  return apiFetch(
-    "/api/investigations",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type":
-          "application/json",
-      },
-      body: JSON.stringify(data),
-    }
-  );
+  return apiFetch("/api/investigations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
+  });
 }
 
-
-export function getInvestigation(
-  investigationId
-) {
+export function getInvestigation(investigationId) {
   if (!investigationId) {
-    throw new Error(
-      "Investigation ID is required."
-    );
+    throw new Error("Investigation ID is required.");
   }
 
   return apiFetch(
@@ -113,21 +93,16 @@ export function getInvestigation(
   );
 }
 
-
 export function attachEvidenceToInvestigation(
   investigationId,
   evidenceId
 ) {
   if (!investigationId) {
-    throw new Error(
-      "Investigation ID is required."
-    );
+    throw new Error("Investigation ID is required.");
   }
 
   if (!evidenceId) {
-    throw new Error(
-      "Evidence ID is required."
-    );
+    throw new Error("Evidence ID is required.");
   }
 
   return apiFetch(
@@ -137,8 +112,7 @@ export function attachEvidenceToInvestigation(
     {
       method: "POST",
       headers: {
-        "Content-Type":
-          "application/json",
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         evidence_id: evidenceId,
@@ -148,14 +122,11 @@ export function attachEvidenceToInvestigation(
   );
 }
 
-
 export function getInvestigationEvidence(
   investigationId
 ) {
   if (!investigationId) {
-    throw new Error(
-      "Investigation ID is required."
-    );
+    throw new Error("Investigation ID is required.");
   }
 
   return apiFetch(
@@ -165,14 +136,11 @@ export function getInvestigationEvidence(
   );
 }
 
-
 export function analyzeInvestigation(
   investigationId
 ) {
   if (!investigationId) {
-    throw new Error(
-      "Investigation ID is required."
-    );
+    throw new Error("Investigation ID is required.");
   }
 
   return apiFetch(
@@ -185,14 +153,11 @@ export function analyzeInvestigation(
   );
 }
 
-
 export function getInvestigationFragments(
   investigationId
 ) {
   if (!investigationId) {
-    throw new Error(
-      "Investigation ID is required."
-    );
+    throw new Error("Investigation ID is required.");
   }
 
   return apiFetch(
@@ -202,14 +167,11 @@ export function getInvestigationFragments(
   );
 }
 
-
 export function analyzeInvestigationRelationships(
   investigationId
 ) {
   if (!investigationId) {
-    throw new Error(
-      "Investigation ID is required."
-    );
+    throw new Error("Investigation ID is required.");
   }
 
   return apiFetch(
@@ -222,14 +184,11 @@ export function analyzeInvestigationRelationships(
   );
 }
 
-
 export function getInvestigationRelationships(
   investigationId
 ) {
   if (!investigationId) {
-    throw new Error(
-      "Investigation ID is required."
-    );
+    throw new Error("Investigation ID is required.");
   }
 
   return apiFetch(
@@ -241,41 +200,31 @@ export function getInvestigationRelationships(
 
 
 /* =========================================================
-   INVESTIGATION WORKFLOW
+   INVESTIGATION WORKFLOW HELPERS
    ========================================================= */
 
 export async function prepareInvestigation(
   investigationId
 ) {
-  const [
-    investigation,
-    evidence,
-  ] = await Promise.all([
-    getInvestigation(
-      investigationId
-    ),
-    getInvestigationEvidence(
-      investigationId
-    ),
-  ]);
+  const [investigation, evidence] =
+    await Promise.all([
+      getInvestigation(investigationId),
+      getInvestigationEvidence(investigationId),
+    ]);
 
   return {
     investigation,
-    evidence:
-      Array.isArray(evidence)
-        ? evidence
-        : evidence?.evidence || [],
+    evidence: Array.isArray(evidence)
+      ? evidence
+      : evidence?.evidence || [],
   };
 }
-
 
 export async function loadInvestigationWorkspace(
   investigationId
 ) {
   if (!investigationId) {
-    throw new Error(
-      "Investigation ID is required."
-    );
+    throw new Error("Investigation ID is required.");
   }
 
   const [
@@ -284,40 +233,25 @@ export async function loadInvestigationWorkspace(
     fragments,
     relationships,
   ] = await Promise.all([
-    getInvestigation(
-      investigationId
-    ),
-    getInvestigationEvidence(
-      investigationId
-    ),
-    getInvestigationFragments(
-      investigationId
-    ),
-    getInvestigationRelationships(
-      investigationId
-    ),
+    getInvestigation(investigationId),
+    getInvestigationEvidence(investigationId),
+    getInvestigationFragments(investigationId),
+    getInvestigationRelationships(investigationId),
   ]);
 
   return {
     investigation,
-
-    evidence:
-      Array.isArray(evidence)
-        ? evidence
-        : evidence?.evidence || [],
-
-    fragments:
-      Array.isArray(fragments)
-        ? fragments
-        : fragments?.fragments || [],
-
-    relationships:
-      Array.isArray(relationships)
-        ? relationships
-        : relationships?.relationships || [],
+    evidence: Array.isArray(evidence)
+      ? evidence
+      : evidence?.evidence || [],
+    fragments: Array.isArray(fragments)
+      ? fragments
+      : fragments?.fragments || [],
+    relationships: Array.isArray(relationships)
+      ? relationships
+      : relationships?.relationships || [],
   };
 }
-
 
 export async function attachMultipleEvidence(
   investigationId,
@@ -325,10 +259,9 @@ export async function attachMultipleEvidence(
 ) {
   const ids = [
     ...new Set(
-      (
-        Array.isArray(evidenceIds)
-          ? evidenceIds
-          : []
+      (Array.isArray(evidenceIds)
+        ? evidenceIds
+        : []
       ).filter(Boolean)
     ),
   ];
@@ -346,7 +279,6 @@ export async function attachMultipleEvidence(
 
   return results;
 }
-
 
 export async function runInvestigationAnalysis(
   investigationId
@@ -377,7 +309,6 @@ export async function runInvestigationAnalysis(
   };
 }
 
-
 export async function analyzeAndLoadInvestigation(
   investigationId
 ) {
@@ -401,7 +332,6 @@ export async function analyzeAndLoadInvestigation(
   );
 }
 
-
 export async function getInvestigationSummary(
   investigationId
 ) {
@@ -412,25 +342,16 @@ export async function getInvestigationSummary(
 
   return {
     investigationId,
-
     investigation:
       workspace.investigation,
-
     evidenceCount:
       workspace.evidence.length,
-
     fragmentCount:
       workspace.fragments.length,
-
     relationshipCount:
       workspace.relationships.length,
-
-    evidence:
-      workspace.evidence,
-
-    fragments:
-      workspace.fragments,
-
+    evidence: workspace.evidence,
+    fragments: workspace.fragments,
     relationships:
       workspace.relationships,
   };
@@ -441,9 +362,7 @@ export async function getInvestigationSummary(
    ANALYSIS
    ========================================================= */
 
-export function scanEvidence(
-  evidenceId
-) {
+export function scanEvidence(evidenceId) {
   return apiFetch(
     `/api/analysis/scan/${encodeURIComponent(
       evidenceId
@@ -451,10 +370,7 @@ export function scanEvidence(
   );
 }
 
-
-export function getFragments(
-  evidenceId
-) {
+export function getFragments(evidenceId) {
   return apiFetch(
     `/api/analysis/fragments/${encodeURIComponent(
       evidenceId
@@ -462,10 +378,7 @@ export function getFragments(
   );
 }
 
-
-export function analyzeRelationships(
-  evidenceId
-) {
+export function analyzeRelationships(evidenceId) {
   return apiFetch(
     `/api/analysis/relationships/${encodeURIComponent(
       evidenceId
@@ -476,10 +389,7 @@ export function analyzeRelationships(
   );
 }
 
-
-export function getRelationships(
-  evidenceId
-) {
+export function getRelationships(evidenceId) {
   return apiFetch(
     `/api/analysis/relationships/${encodeURIComponent(
       evidenceId
@@ -492,9 +402,7 @@ export function getRelationships(
    RECONSTRUCTION
    ========================================================= */
 
-export function runReconstruction(
-  evidenceId
-) {
+export function runReconstruction(evidenceId) {
   return apiFetch(
     `/api/reconstruction/run/${encodeURIComponent(
       evidenceId
@@ -505,17 +413,13 @@ export function runReconstruction(
   );
 }
 
-
-export function getReconstructionResults(
-  evidenceId
-) {
+export function getReconstructionResults(evidenceId) {
   return apiFetch(
     `/api/reconstruction/results/${encodeURIComponent(
       evidenceId
     )}`
   );
 }
-
 
 export function getReconstructionAssessment(
   reconstructionId
@@ -527,7 +431,6 @@ export function getReconstructionAssessment(
   );
 }
 
-
 export function getReconstructionContributions(
   reconstructionId
 ) {
@@ -537,7 +440,6 @@ export function getReconstructionContributions(
     )}/contributions`
   );
 }
-
 
 export function getReconstructionEvidenceAnalysis(
   reconstructionId
@@ -549,7 +451,6 @@ export function getReconstructionEvidenceAnalysis(
   );
 }
 
-
 export function getReconstructionPriority(
   reconstructionId
 ) {
@@ -559,7 +460,6 @@ export function getReconstructionPriority(
     )}/priority`
   );
 }
-
 
 export function getReconstructionDna(
   reconstructionId
@@ -571,7 +471,6 @@ export function getReconstructionDna(
   );
 }
 
-
 export function getReconstructionProvenance(
   reconstructionId
 ) {
@@ -582,94 +481,23 @@ export function getReconstructionProvenance(
   );
 }
 
-
-/* =========================================================
-   RECOVERED ARTIFACT PREVIEW / DOWNLOAD
-   ========================================================= */
-
-export function getReconstructionPreviewUrl(
+export function getReconstructionDuplicates(
   reconstructionId
-) {
-  if (!reconstructionId) {
-    throw new Error(
-      "Reconstruction ID is required."
-    );
-  }
-
-  return (
-    `${API_BASE_URL}` +
-    `/api/reconstruction/${encodeURIComponent(
-      reconstructionId
-    )}/preview`
-  );
-}
-
-
-export function getReconstructionDownloadUrl(
-  reconstructionId
-) {
-  if (!reconstructionId) {
-    throw new Error(
-      "Reconstruction ID is required."
-    );
-  }
-
-  return (
-    `${API_BASE_URL}` +
-    `/api/reconstruction/${encodeURIComponent(
-      reconstructionId
-    )}/download`
-  );
-}
-
-
-/* =========================================================
-   ORIGINAL EVIDENCE PREVIEW / DOWNLOAD
-   ========================================================= */
-
-export function getEvidencePreviewUrl(
-  evidenceId
-) {
-  if (!evidenceId) {
-    throw new Error(
-      "Evidence ID is required."
-    );
-  }
-
-  return (
-    `${API_BASE_URL}` +
-    `/api/evidence/${encodeURIComponent(
-      evidenceId
-    )}/preview`
-  );
-}
-
-
-export function getEvidenceDownloadUrl(
-  evidenceId
-) {
-  if (!evidenceId) {
-    throw new Error(
-      "Evidence ID is required."
-    );
-  }
-
-  return (
-    `${API_BASE_URL}` +
-    `/api/evidence/${encodeURIComponent(
-      evidenceId
-    )}/download`
-  );
-}
-
-
-export function getEvidenceRegions(
-  evidenceId
 ) {
   return apiFetch(
-    `/api/evidence/${encodeURIComponent(
-      evidenceId
-    )}/regions`
+    `/api/reconstruction/${encodeURIComponent(
+      reconstructionId
+    )}/duplicates`
+  );
+}
+
+export function getEvidenceProvenance(
+  reconstructionId
+) {
+  return apiFetch(
+    `/api/reconstruction/${encodeURIComponent(
+      reconstructionId
+    )}/evidence-provenance`
   );
 }
 
@@ -682,17 +510,86 @@ export function getRecoveryComparison(
   evidenceId,
   reconstructionId
 ) {
-  const params =
-    reconstructionId
-      ? `?reconstruction_id=${encodeURIComponent(
-          reconstructionId
-        )}`
-      : "";
+  const params = reconstructionId
+    ? `?reconstruction_id=${encodeURIComponent(
+        reconstructionId
+      )}`
+    : "";
 
   return apiFetch(
     `/api/recovery-comparison/${encodeURIComponent(
       evidenceId
     )}${params}`
+  );
+}
+
+
+/* =========================================================
+   EVIDENCE PREVIEW / DOWNLOAD
+   ========================================================= */
+
+export function getEvidencePreviewUrl(evidenceId) {
+  if (!evidenceId) {
+    throw new Error("Evidence ID is required.");
+  }
+
+  return `${API_BASE_URL}/api/evidence/${encodeURIComponent(
+    evidenceId
+  )}/preview`;
+}
+
+export function getEvidenceDownloadUrl(evidenceId) {
+  if (!evidenceId) {
+    throw new Error("Evidence ID is required.");
+  }
+
+  return `${API_BASE_URL}/api/evidence/${encodeURIComponent(
+    evidenceId
+  )}/download`;
+}
+
+export function getReconstructionPreviewUrl(
+  reconstructionId
+) {
+  if (!reconstructionId) {
+    throw new Error(
+      "Reconstruction ID is required."
+    );
+  }
+
+  return `${API_BASE_URL}/api/reconstruction/${encodeURIComponent(
+    reconstructionId
+  )}/preview`;
+}
+
+export function getReconstructionDownloadUrl(
+  reconstructionId
+) {
+  if (!reconstructionId) {
+    throw new Error(
+      "Reconstruction ID is required."
+    );
+  }
+
+  return `${API_BASE_URL}/api/reconstruction/${encodeURIComponent(
+    reconstructionId
+  )}/download`;
+}
+
+
+/* =========================================================
+   REGIONS
+   ========================================================= */
+
+export function getEvidenceRegions(evidenceId) {
+  if (!evidenceId) {
+    throw new Error("Evidence ID is required.");
+  }
+
+  return apiFetch(
+    `/api/evidence/${encodeURIComponent(
+      evidenceId
+    )}/regions`
   );
 }
 
@@ -716,7 +613,7 @@ export function askEvidenceQuery(
 
 
 /* =========================================================
-   EVIDENCE COPILOT + OLLAMA
+   EVIDENCE COPILOT
    ========================================================= */
 
 export function askCopilotQuestion(
@@ -724,41 +621,81 @@ export function askCopilotQuestion(
   question,
   options = {}
 ) {
-  if (!evidenceId) {
-    throw new Error(
-      "Evidence ID is required."
-    );
-  }
-
-  if (!question?.trim()) {
-    throw new Error(
-      "Question is required."
-    );
-  }
-
-  const useOllama =
-    options.useOllama !== false;
-
   return apiFetch(
     "/api/copilot/query",
     {
       method: "POST",
-
       headers: {
-        "Content-Type":
-          "application/json",
+        "Content-Type": "application/json",
       },
-
       body: JSON.stringify({
-        evidence_id:
-          evidenceId,
-
-        question:
-          question.trim(),
-
-        use_ollama:
-          useOllama,
+        evidence_id: evidenceId,
+        question,
+        use_ollama: Boolean(
+          options.useOllama
+        ),
       }),
     }
   );
+}
+
+
+/* =========================================================
+   COPILOT STATUS
+   ========================================================= */
+
+export function getCopilotStatus() {
+  return apiFetch(
+    "/api/copilot/status"
+  );
+}
+
+
+/* =========================================================
+   AI IMAGE RECOVERY
+   ========================================================= */
+
+export function runImageRecovery(
+  evidenceId
+) {
+  if (!evidenceId) {
+    throw new Error("Evidence ID is required.");
+  }
+
+  return apiFetch(
+    `/api/image-recovery/run/${encodeURIComponent(
+      evidenceId
+    )}`,
+    {
+      method: "POST",
+    }
+  );
+}
+
+export function getImageRecoveryPreviewUrl(
+  recoveryId
+) {
+  if (!recoveryId) {
+    throw new Error(
+      "Image recovery ID is required."
+    );
+  }
+
+  return `${API_BASE_URL}/api/image-recovery/${encodeURIComponent(
+    recoveryId
+  )}/preview`;
+}
+
+export function getImageRecoveryDownloadUrl(
+  recoveryId
+) {
+  if (!recoveryId) {
+    throw new Error(
+      "Image recovery ID is required."
+    );
+  }
+
+  return `${API_BASE_URL}/api/image-recovery/${encodeURIComponent(
+    recoveryId
+  )}/download`;
 }

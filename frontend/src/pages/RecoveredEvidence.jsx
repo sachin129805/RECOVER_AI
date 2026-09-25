@@ -69,6 +69,9 @@ import {
   getReconstructionDownloadUrl,
 
   getEvidenceRegions,
+  runImageRecovery,
+  getImageRecoveryPreviewUrl,
+  getImageRecoveryDownloadUrl,
 
 } from "../api";
 
@@ -657,6 +660,29 @@ export default function RecoveredEvidence() {
 
 
 
+  const [
+    imageRecovery,
+    setImageRecovery,
+  ] = useState(null);
+
+  const [
+    imageRecoveryLoading,
+    setImageRecoveryLoading,
+  ] = useState(false);
+
+  const [
+    imageRecoveryError,
+    setImageRecoveryError,
+  ] = useState("");
+
+  const [
+    imageRecoveryVersion,
+    setImageRecoveryVersion,
+  ] = useState(0);
+
+
+
+
 
   const investigationId =
 
@@ -842,6 +868,8 @@ export default function RecoveredEvidence() {
 
         item.evidence_id;
 
+      setImageRecovery(null);
+
 
 
 
@@ -955,6 +983,60 @@ export default function RecoveredEvidence() {
         reconstructionList
 
       );
+
+
+
+
+      // If this is a visually corrupted image with no fragment-based
+      // reconstruction, generate an explicitly inferred restoration.
+      const extension = String(
+        item.extension ||
+        item.filename?.split(".").pop() ||
+        ""
+      ).toLowerCase();
+
+      const isImageEvidence = [
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".bmp",
+        ".tif",
+        ".tiff",
+      ].includes(extension);
+
+      if (
+        isImageEvidence &&
+        !reconstructionList?.[0]?.reconstruction_id
+      ) {
+        try {
+          setImageRecoveryLoading(true);
+          setImageRecoveryError("");
+
+          const restored = await runImageRecovery(evidenceId);
+
+          if (!restored?.evidence_id) {
+            throw new Error(
+              "The image recovery engine returned no recovered evidence ID."
+            );
+          }
+
+          setImageRecovery(restored);
+          setImageRecoveryVersion(Date.now());
+        } catch (imageError) {
+          console.warn(
+            "AI image recovery unavailable:",
+            imageError
+          );
+          setImageRecovery(null);
+          setImageRecoveryError(
+            imageError?.message ||
+            "AI image restoration failed."
+          );
+        } finally {
+          setImageRecoveryLoading(false);
+        }
+      }
 
 
 
@@ -1833,6 +1915,80 @@ export default function RecoveredEvidence() {
     };
 
 
+
+
+
+  const runAIImageRecovery = async () => {
+    if (!active?.evidence_id) return;
+
+    setImageRecoveryLoading(true);
+    setImageRecoveryError("");
+    setError("");
+
+    try {
+      const result = await runImageRecovery(
+        active.evidence_id
+      );
+
+      if (!result?.evidence_id) {
+        throw new Error(
+          "The recovery engine returned no recovered evidence ID."
+        );
+      }
+
+      setImageRecovery(result);
+      setImageRecoveryVersion(Date.now());
+    } catch (err) {
+      const message =
+        err?.message ||
+        "Unable to generate AI-inferred image recovery.";
+
+      setImageRecovery(null);
+      setImageRecoveryError(message);
+      setError(message);
+    } finally {
+      setImageRecoveryLoading(false);
+    }
+  };
+
+  const openImageRecoveryPreview = () => {
+    if (!imageRecovery?.evidence_id) {
+      setError(
+        "No AI-inferred image recovery is currently available."
+      );
+      return;
+    }
+
+    setPreviewTitle(
+      imageRecovery.output_filename ||
+      "AI-inferred recovered image"
+    );
+
+    setPreviewUrl(
+      getImageRecoveryPreviewUrl(
+        imageRecovery.evidence_id
+      )
+    );
+
+    setPreviewOpen(true);
+  };
+
+  const downloadImageRecovery = () => {
+    if (!imageRecovery?.evidence_id) {
+      setError(
+        "No AI-inferred image recovery is currently available."
+      );
+      return;
+    }
+
+    window.open(
+      getImageRecoveryDownloadUrl(
+        imageRecovery.evidence_id
+      ),
+      "_blank",
+      "noopener,noreferrer"
+    );
+  };
 
 
 
@@ -4140,146 +4296,109 @@ export default function RecoveredEvidence() {
 
 
 
-                    {latestReconstruction?.reconstruction_id ? (
-
-                       <img
-
-                        src={getReconstructionPreviewUrl(
-
-                        latestReconstruction.reconstruction_id
-
-                       )}
-
-                       alt={
-
-                        latestReconstruction.output_filename ||
-
-                        "Recovered artifact"
-
-                    }
-
-                    style={{
-
-                      width: "100%",
-
-                      height: "100%",
-
-                      objectFit: "contain",
-
-                      objectPosition: "center",
-
-                      display: "block",
-
-                      background: "#f1f5f9",
-
-                    }}
-
-                  />
-
-
-
-                    ) : (
-
-
-
+                    {imageRecovery?.evidence_id ? (
                       <div
-
                         style={{
-
-                          height:
-
-                            "100%",
-
-
-
-                          display:
-
-                            "grid",
-
-
-
-                          placeItems:
-
-                            "center",
-
-
-
-                          padding:
-
-                            20,
-
-
-
-                          textAlign:
-
-                            "center",
-
+                          position: "relative",
+                          width: "100%",
+                          height: "100%",
+                          background: "#f1f5f9",
                         }}
-
                       >
-
-
-
-                        <div>
-
-
-
+                        <img
+                          src={`${getImageRecoveryPreviewUrl(
+                            imageRecovery.evidence_id
+                          )}?v=${imageRecoveryVersion}`}
+                          alt={
+                            imageRecovery.output_filename ||
+                            "AI-inferred recovered image"
+                          }
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            objectFit: "contain",
+                            objectPosition: "center",
+                            display: "block",
+                          }}
+                          onLoad={() => {
+                            setImageRecoveryError("");
+                          }}
+                          onError={() => {
+                            setImageRecoveryError(
+                              "The recovery completed, but the recovered image could not be loaded from the backend preview endpoint."
+                            );
+                          }}
+                        />
+                        <div
+                          style={{
+                            position: "absolute",
+                            left: 12,
+                            right: 12,
+                            bottom: 12,
+                            padding: "8px 10px",
+                            borderRadius: 8,
+                            background: "rgba(15, 23, 42, 0.88)",
+                            color: "#fff",
+                            fontSize: 9.5,
+                            lineHeight: 1.4,
+                          }}
+                        >
                           <strong>
-
-                            No recovered artifact
-
+                            AI-INFERRED RECONSTRUCTION
                           </strong>
-
-
-
-                          <p
-
-                            style={{
-
-                              marginTop:
-
-                                8,
-
-
-
-                              fontSize:
-
-                                11,
-
-
-
-                              opacity:
-
-                                0.65,
-
-                            }}
-
-                          >
-
-                            Reconstruction requires
-
-                            compatible fragment
-
-                            candidates. No recovered
-
-                            artifact is being fabricated.
-
-                          </p>
-
-
-
+                          <div style={{ opacity: 0.8 }}>
+                            INFERRED — NOT VERIFIED ORIGINAL DATA
+                          </div>
                         </div>
-
-
-
                       </div>
-
-
-
+                    ) : latestReconstruction?.reconstruction_id ? (
+                      <img
+                        src={getReconstructionPreviewUrl(
+                          latestReconstruction.reconstruction_id
+                        )}
+                        alt={
+                          latestReconstruction.output_filename ||
+                          "Recovered artifact"
+                        }
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          objectFit: "contain",
+                          objectPosition: "center",
+                          display: "block",
+                          background: "#f1f5f9",
+                        }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          height: "100%",
+                          display: "grid",
+                          placeItems: "center",
+                          padding: 20,
+                          textAlign: "center",
+                        }}
+                      >
+                        <div>
+                          <strong>
+                            {imageRecoveryLoading
+                              ? "Generating AI restoration…"
+                              : "No recovered artifact"}
+                          </strong>
+                          <p
+                            style={{
+                              marginTop: 8,
+                              fontSize: 11,
+                              opacity: 0.65,
+                            }}
+                          >
+                            {imageRecoveryLoading
+                              ? "Detecting damaged regions and generating an inferred restoration."
+                              : "No verified fragment reconstruction is available for this evidence."}
+                          </p>
+                        </div>
+                      </div>
                     )}
-
-
-
                   </div>
 
 
@@ -4444,27 +4563,13 @@ export default function RecoveredEvidence() {
 
 
 
-                    {comparisonSummary.recovered !==
-
-                    null
-
-                      ? formatBytes(
-
-                          comparisonSummary.recovered
-
-                        )
-
-                      : latestReconstruction?.recovered_size_bytes !=
-
-                        null
-
-                        ? formatBytes(
-
-                            latestReconstruction.recovered_size_bytes
-
-                          )
-
-                        : "Not available"}
+                    {imageRecovery?.recovered_size_bytes != null
+                      ? formatBytes(imageRecovery.recovered_size_bytes)
+                      : comparisonSummary.recovered !== null
+                        ? formatBytes(comparisonSummary.recovered)
+                        : latestReconstruction?.recovered_size_bytes != null
+                          ? formatBytes(latestReconstruction.recovered_size_bytes)
+                          : "Not available"}
 
 
 
@@ -4562,7 +4667,11 @@ export default function RecoveredEvidence() {
 
                   {
 
-                    comparisonSummary.status
+                    imageRecovery?.evidence_id
+
+                      ? "AI_INFERRED_RECONSTRUCTION"
+
+                      : comparisonSummary.status
 
                   }
 
@@ -4677,84 +4786,132 @@ export default function RecoveredEvidence() {
 
 
                 <button
-
                   className="secondary-btn"
-
                   type="button"
-
                   onClick={
-
-                    openReconstructionPreview
-
+                    latestReconstruction?.reconstruction_id
+                      ? openReconstructionPreview
+                      : openImageRecoveryPreview
                   }
-
                   disabled={
-
-                    !latestReconstruction?.reconstruction_id
-
+                    !latestReconstruction?.reconstruction_id &&
+                    !imageRecovery?.evidence_id
                   }
-
                 >
-
-
-
-                  <Eye
-
-                    size={15}
-
-                  />
-
-
-
+                  <Eye size={15} />
                   Preview Recovered
-
-
-
                 </button>
-
-
-
-
 
                 <button
-
                   className="secondary-btn"
-
                   type="button"
-
                   onClick={
-
-                    downloadReconstruction
-
+                    latestReconstruction?.reconstruction_id
+                      ? downloadReconstruction
+                      : downloadImageRecovery
                   }
-
                   disabled={
-
-                    !latestReconstruction?.reconstruction_id
-
+                    !latestReconstruction?.reconstruction_id &&
+                    !imageRecovery?.evidence_id
                   }
-
                 >
-
-
-
-                  <Download
-
-                    size={15}
-
-                  />
-
-
-
+                  <Download size={15} />
                   Download Recovered
-
-
-
                 </button>
+
+                {!latestReconstruction?.reconstruction_id && (
+                  <button
+                    className="secondary-btn"
+                    type="button"
+                    onClick={runAIImageRecovery}
+                    disabled={
+                      imageRecoveryLoading ||
+                      !active?.evidence_id
+                    }
+                    style={{
+                      borderColor: "#c4b5fd",
+                      color: "#6d28d9",
+                    }}
+                  >
+                    <Bot size={15} />
+                    {imageRecoveryLoading
+                      ? "Restoring…"
+                      : "AI Restore Image"}
+                  </button>
+                )}
 
 
 
               </div>
+
+              {imageRecoveryLoading && !imageRecovery?.evidence_id && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    padding: "9px 11px",
+                    borderRadius: 8,
+                    border: "1px solid #c4b5fd",
+                    background: "#f5f3ff",
+                    color: "#5b21b6",
+                    fontSize: 10,
+                  }}
+                >
+                  <strong>RESTORING IMAGE…</strong>
+                  <div style={{ marginTop: 3, opacity: 0.8 }}>
+                    LaMa is detecting damaged regions and generating the inferred image.
+                  </div>
+                </div>
+              )}
+
+              {imageRecoveryError && !imageRecovery?.evidence_id && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    padding: "9px 11px",
+                    borderRadius: 8,
+                    border: "1px solid #fecaca",
+                    background: "#fef2f2",
+                    color: "#991b1b",
+                    fontSize: 10,
+                    lineHeight: 1.45,
+                  }}
+                >
+                  <strong>IMAGE RESTORATION ERROR</strong>
+                  <div style={{ marginTop: 3 }}>
+                    {imageRecoveryError}
+                  </div>
+                </div>
+              )}
+
+              {imageRecovery?.evidence_id && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    padding: "9px 11px",
+                    borderRadius: 8,
+                    border: "1px solid #fed7aa",
+                    background: "#fff7ed",
+                    color: "#9a3412",
+                    fontSize: 10,
+                    lineHeight: 1.45,
+                  }}
+                >
+                  <strong>
+                    INFERRED — NOT VERIFIED ORIGINAL DATA
+                  </strong>
+                  <div>
+                    This image restoration is generated by the LaMa
+                    neural image-inpainting model from the damaged image.
+                    It is not a byte-verified recovery of the original evidence.
+                  </div>
+                  <div style={{ marginTop: 5 }}>
+                    Engine: <strong>{imageRecovery.method || "LaMa neural inpainting"}</strong>
+                    {imageRecovery.recovery_confidence != null && (
+                      <> · Heuristic recovery estimate: <strong>{imageRecovery.recovery_confidence}%</strong></>
+                    )}
+                  </div>
+                </div>
+              )}
 
 
 
